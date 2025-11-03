@@ -16,11 +16,11 @@ app = FastAPI()
 # Add CORS middleware with more explicit configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://ai-resume-frontend-nu.vercel.app", "*"],  # Add your frontend URL explicitly and allow all origins as fallback
+    allow_origins=["https://ai-resume-frontend-nu.vercel.app", "*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
-    expose_headers=["*"],  # Expose all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Create a router with the /api prefix
@@ -80,281 +80,87 @@ async def extract_text_from_docx(file_content: bytes) -> str:
         logging.error(f"DOCX extraction error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Error extracting DOCX text: {str(e)}")
 
-
 async def analyze_resume_with_ai(resume_text: str, target_role: Optional[str] = None) -> dict:
-    """Analyze resume using OpenAI API with improved error handling and dynamic results"""
+    """Analyze resume using OpenAI API - simplified version with proper error handling"""
     try:
         # Get API key from environment variables
         api_key = os.environ.get('OPENAI_API_KEY')
         if not api_key:
             logging.error("OPENAI_API_KEY environment variable is missing")
-            raise ValueError("OPENAI_API_KEY environment variable is required")
+            raise HTTPException(status_code=500, detail="OpenAI API key is not configured. Please contact support.")
         
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=api_key)
+        # Import the OpenAI client
+        from openai import OpenAI
+        
+        # Initialize client with just the API key
+        client = OpenAI(api_key=api_key)
         
         # Create target role context
         target_context = f" for a {target_role} position" if target_role else ""
         
-        # Create system message for proper analysis
+        # System message for the analysis
         system_message = f"""You are an expert resume analyzer and career coach. Analyze resumes{target_context} and provide:
 1. Missing sections (e.g., Profile/Summary, Skills, Experience, Education, Certifications, References)
 2. Weak areas (vague descriptions, lack of measurable achievements, poor formatting)
 3. Specific improvement suggestions with strong action verbs and quantifiable results
 4. A polished, improved version of the resume
 
-Be specific and provide personalized feedback based on the content of the resume.
-If the resume is technical, focus on technical improvement opportunities.
-If the resume is for a non-technical role, focus on relevant skills and achievements for that domain.
-
 Provide your response in this exact JSON format:
 {{
-  "missing_sections": ["list of missing sections based on actual resume content"],
-  "weak_areas": ["specific weak areas identified in this particular resume"],
-  "improvement_suggestions": ["detailed, actionable suggestions tailored to this resume"],
-  "improved_resume": "complete improved version of the resume with all your suggested enhancements applied"
+  "missing_sections": ["list of missing sections"],
+  "weak_areas": ["list of weak areas"],
+  "improvement_suggestions": ["list of actionable suggestions"],
+  "improved_resume": "complete improved resume text"
 }}"""
 
         # Create user message with the resume text
-        user_message = f"""Analyze this resume and provide detailed, personalized feedback{target_context}:
+        user_message = f"""Analyze this resume and provide detailed feedback{target_context}:
 
 {resume_text}
 
 Remember to respond ONLY with valid JSON in the exact format specified."""
 
-        try:
-            # Try first with GPT-4 for better analysis if available
-            try:
-                logging.info("Attempting analysis with GPT-4-turbo")
-                response = await client.chat.completions.create(
-                    model="gpt-4-turbo-preview",
-                    messages=[
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": user_message}
-                    ],
-                    temperature=0.7,
-                    max_tokens=4000
-                )
-            except Exception as gpt4_error:
-                # Fall back to GPT-3.5-turbo if GPT-4 is unavailable
-                logging.warning(f"GPT-4 analysis failed: {str(gpt4_error)}. Falling back to GPT-3.5-turbo")
-                response = await client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": user_message}
-                    ],
-                    temperature=0.7,
-                    max_tokens=3000
-                )
-            
-            # Get response text
-            response_text = response.choices[0].message.content.strip()
-            
-            # Clean up response to ensure valid JSON
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.startswith("```"):
-                response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-            
-            # Parse JSON response
-            try:
-                analysis_data = json.loads(response_text.strip())
-                logging.info("Successfully parsed analysis response from API")
-                return analysis_data
-            except json.JSONDecodeError as json_err:
-                logging.error(f"Failed to parse JSON response: {str(json_err)}")
-                logging.error(f"Response text: {response_text[:200]}...")
-                # Try with explicit JSON formatting instructions
-                return await fallback_analysis(client, resume_text, target_context)
-            
-        except Exception as api_error:
-            logging.error(f"OpenAI API error: {str(api_error)}")
-            # Try with a fallback approach
-            return await fallback_analysis(client, resume_text, target_context)
-            
-    except Exception as e:
-        logging.error(f"Critical error in AI analysis: {str(e)}")
-        logging.warning("*** Using STATIC ANALYSIS as fallback due to critical error ***")
-        # Use static analysis as last resort
-        return create_static_but_customized_analysis(resume_text)
-
-
-async def fallback_analysis(client, resume_text, target_context):
-    """Fallback analysis using more explicit JSON formatting"""
-    try:
-        logging.info("Attempting fallback analysis with simplified instructions")
-        fallback_system = """You are an expert resume analyzer. You MUST respond ONLY with a valid JSON object containing these exact keys:
-- missing_sections: array of strings
-- weak_areas: array of strings
-- improvement_suggestions: array of strings
-- improved_resume: string
-
-Do not include any other text, explanation, or markdown formatting."""
-
-        fallback_prompt = f"""Analyze this resume text and provide specific, personalized feedback{target_context}:
-
-{resume_text}
-
-Respond ONLY with a JSON object."""
-
-        fallback_response = await client.chat.completions.create(
+        # Make the API call - using synchronous client to avoid httpx issues
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": fallback_system},
-                {"role": "user", "content": fallback_prompt}
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
             ],
-            temperature=0.5,
-            max_tokens=3000
+            temperature=0.7
         )
         
-        fallback_text = fallback_response.choices[0].message.content.strip()
-        try:
-            result = json.loads(fallback_text)
-            logging.info("Successfully parsed fallback analysis response")
-            return result
-        except json.JSONDecodeError:
-            logging.error("Failed to parse fallback JSON response")
-            logging.warning("*** Using STATIC ANALYSIS as fallback due to JSON parsing error ***")
-            return create_static_but_customized_analysis(resume_text)
+        # Get response text
+        response_text = response.choices[0].message.content.strip()
         
-    except Exception as fallback_error:
-        logging.error(f"Fallback analysis failed: {str(fallback_error)}")
-        logging.warning("*** Using STATIC ANALYSIS as final fallback ***")
-        # Only use static response as last resort when everything else fails
-        return create_static_but_customized_analysis(resume_text)
-
-
-def create_static_but_customized_analysis(resume_text):
-    """Create a static but somewhat customized analysis based on resume text patterns"""
-    logging.warning("*** STATIC ANALYSIS being used - this is not a dynamic AI analysis ***")
-    
-    # Extract basic sections to see what might be missing
-    resume_lower = resume_text.lower()
-    
-    missing_sections = []
-    if not any(term in resume_lower for term in ["summary", "profile", "objective"]):
-        missing_sections.append("Professional Summary")
-    
-    if not any(term in resume_lower for term in ["skill", "expertise", "competenc"]):
-        missing_sections.append("Skills Section")
-    
-    if not any(term in resume_lower for term in ["education", "degree", "university", "college"]):
-        missing_sections.append("Education")
-    
-    if not any(term in resume_lower for term in ["experience", "work", "job", "career"]):
-        missing_sections.append("Professional Experience")
-    
-    # Identify potential weak areas
-    weak_areas = []
-    if len(resume_text) < 500:
-        weak_areas.append("Resume appears too short and lacks detailed content")
-    
-    if not any(term in resume_lower for term in ["increase", "improve", "achiev", "result", "success"]):
-        weak_areas.append("Lack of measurable achievements and results")
-    
-    # Default weak areas if nothing specific found
-    if not weak_areas:
-        weak_areas = [
-            "Bullet points lack quantifiable achievements",
-            "Too much focus on responsibilities rather than accomplishments",
-            "No clear career progression highlighted"
-        ]
-    
-    # Generate improvements based on identified issues
-    improvements = []
-    for area in weak_areas:
-        if "achievements" in area.lower():
-            improvements.append("Add measurable results to each role (e.g., 'Increased sales by 20%')")
-        if "responsibilities" in area.lower():
-            improvements.append("Transform duty descriptions into accomplishment statements")
-    
-    # Default improvements if nothing specific generated
-    if not improvements:
-        improvements = [
-            "Include a skills section with relevant keywords for ATS optimization",
-            "Add a professional summary showcasing your unique value proposition",
-            "Use strong action verbs at the beginning of bullet points"
-        ]
-    
-    # Add some more specific improvements if we can detect the type of resume
-    if "software" in resume_lower or "develop" in resume_lower or "program" in resume_lower:
-        improvements.append("Highlight specific programming languages, frameworks, and technical skills")
-    elif "market" in resume_lower or "brand" in resume_lower:
-        improvements.append("Quantify marketing campaigns with specific ROI and performance metrics")
-    elif "sales" in resume_lower:
-        improvements.append("Include specific sales figures, quotas achieved, and client acquisition metrics")
-    
-    logging.warning("Static analysis complete - returning canned response with minimal customization")
-    
-    return {
-        "missing_sections": missing_sections,
-        "weak_areas": weak_areas,
-        "improvement_suggestions": improvements,
-        "improved_resume": resume_text + "\n\n# This would contain an AI-improved version of your resume."
-    }
-
-# Debug route to check library availability
-@api_router.get("/debug")
-async def debug_info():
-    """Debug endpoint to check library availability"""
-    import sys
-    import platform
-    
-    debug_info = {
-        "python_version": sys.version,
-        "platform": platform.platform(),
-        "libraries": {},
-        "environment": {}
-    }
-    
-    # Check for environment variables (redact sensitive values)
-    for key in os.environ:
-        if key in ['OPENAI_API_KEY', 'MONGO_URL']:
-            debug_info["environment"][key] = "Set" if os.environ.get(key) else "Not set"
-        else:
-            debug_info["environment"][key] = os.environ.get(key)
-    
-    # Check for library availability
-    try:
-        import PyPDF2
-        debug_info["libraries"]["PyPDF2"] = {
-            "installed": True,
-            "version": getattr(PyPDF2, "__version__", "unknown")
-        }
-    except ImportError as e:
-        debug_info["libraries"]["PyPDF2"] = {
-            "installed": False,
-            "error": str(e)
-        }
-    
-    try:
-        import docx
-        debug_info["libraries"]["python-docx"] = {
-            "installed": True,
-            "version": getattr(docx, "__version__", "unknown")
-        }
-    except ImportError as e:
-        debug_info["libraries"]["python-docx"] = {
-            "installed": False,
-            "error": str(e)
-        }
-    
-    try:
-        import openai
-        debug_info["libraries"]["openai"] = {
-            "installed": True,
-            "version": getattr(openai, "__version__", "unknown")
-        }
-    except ImportError as e:
-        debug_info["libraries"]["openai"] = {
-            "installed": False,
-            "error": str(e)
-        }
-    
-    return debug_info
+        # Clean up response to ensure valid JSON
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        if response_text.startswith("```"):
+            response_text = response_text[3:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+        
+        # Parse JSON response
+        try:
+            analysis_data = json.loads(response_text.strip())
+            logging.info("Successfully parsed analysis response")
+            return analysis_data
+        except json.JSONDecodeError as json_err:
+            logging.error(f"Failed to parse JSON response: {str(json_err)}")
+            raise HTTPException(
+                status_code=500, 
+                detail="Failed to parse response from AI service. Please try again later."
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error in AI analysis: {str(e)}")
+        raise HTTPException(
+            status_code=503, 
+            detail="AI analysis service is temporarily unavailable. Please try again later."
+        )
 
 # API Routes
 @api_router.get("/")
