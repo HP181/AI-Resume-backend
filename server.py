@@ -16,7 +16,7 @@ app = FastAPI()
 # Add CORS middleware with more explicit configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://ai-resume-backend-wheat.vercel.app","http://localhost:3000/", "*"],
+    allow_origins=["https://ai-resume-backend-wheat.vercel.app","http://localhost:3000", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
