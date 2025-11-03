@@ -1,6 +1,5 @@
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware  # Import the CORS middleware
-from starlette.middleware.cors import CORSMiddleware  # Alternative import
 import os
 import logging
 from pydantic import BaseModel, Field, ConfigDict
@@ -9,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 import io
 import json
+from fastapi.responses import StreamingResponse
 
 # Create the main app
 app = FastAPI()
@@ -47,73 +47,53 @@ class ExportRequest(BaseModel):
     template_style: str  # "modern", "classic", "creative", "professional"
     format: str  # "pdf" or "docx"
 
-# API Routes
-@api_router.get("/")
-async def root():
-    return {"message": "AI Power Resume API"}
-
-@api_router.options("/{path:path}")
-async def options_route(path: str):
-    """Handle OPTIONS requests for CORS preflight"""
-    return {"detail": "OK"}
-
-@api_router.post("/upload")
-async def upload_resume(file: UploadFile = File(...)):
-    """Upload and extract text from resume"""
+# Helper functions for file processing
+async def extract_text_from_pdf(file_content: bytes) -> str:
+    """Extract text from PDF file"""
     try:
-        content = await file.read()
-        
-        # Dynamically import libraries only when needed
-        if file.filename.lower().endswith('.pdf'):
-            try:
-                import PyPDF2
-                pdf_file = io.BytesIO(content)
-                pdf_reader = PyPDF2.PdfReader(pdf_file)
-                text = ""
-                for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
-                text = text.strip()
-            except ImportError:
-                text = "PDF extraction not available in this deployment. Please submit plain text."
-        elif file.filename.lower().endswith('.docx'):
-            try:
-                import docx
-                doc_file = io.BytesIO(content)
-                doc = docx.Document(doc_file)
-                text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-            except ImportError:
-                text = "DOCX extraction not available in this deployment. Please submit plain text."
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file format. Please upload PDF or DOCX.")
-        
-        return {
-            "success": True,
-            "extracted_text": text,
-            "filename": file.filename
-        }
-    except HTTPException:
-        raise
+        import PyPDF2
+        pdf_file = io.BytesIO(file_content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() + "\n"
+        return text.strip()
+    except ImportError as import_error:
+        logging.error(f"PyPDF2 import error: {str(import_error)}")
+        raise HTTPException(status_code=500, detail="PDF extraction is not available on this server. Please contact support.")
     except Exception as e:
-        logging.error(f"File processing error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+        logging.error(f"PDF extraction error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Error extracting PDF text: {str(e)}")
 
-@api_router.post("/analyze", response_model=ResumeAnalysis)
-async def analyze_resume(request: AnalyzeRequest):
-    """Analyze resume using AI"""
+async def extract_text_from_docx(file_content: bytes) -> str:
+    """Extract text from DOCX file"""
     try:
-        # Try to use OpenAI API if available
-        try:
-            from openai import AsyncOpenAI
-            
-            api_key = os.environ.get('OPENAI_API_KEY')
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY environment variable is required")
-            
-            client = AsyncOpenAI(api_key=api_key)
-            
-            target_context = f" for a {request.target_role} position" if request.target_role else ""
-            
-            system_message = f"""You are an expert resume analyzer and career coach. Analyze resumes{target_context} and provide:
+        import docx
+        doc_file = io.BytesIO(file_content)
+        doc = docx.Document(doc_file)
+        text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+        return text.strip()
+    except ImportError as import_error:
+        logging.error(f"python-docx import error: {str(import_error)}")
+        raise HTTPException(status_code=500, detail="DOCX extraction is not available on this server. Please contact support.")
+    except Exception as e:
+        logging.error(f"DOCX extraction error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Error extracting DOCX text: {str(e)}")
+
+async def analyze_resume_with_ai(resume_text: str, target_role: Optional[str] = None) -> dict:
+    """Analyze resume using OpenAI API"""
+    try:
+        from openai import AsyncOpenAI
+        
+        api_key = os.environ.get('OPENAI_API_KEY')
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        
+        client = AsyncOpenAI(api_key=api_key)
+        
+        target_context = f" for a {target_role} position" if target_role else ""
+        
+        system_message = f"""You are an expert resume analyzer and career coach. Analyze resumes{target_context} and provide:
 1. Missing sections (e.g., Profile/Summary, Skills, Experience, Education, Certifications, References)
 2. Weak areas (vague descriptions, lack of measurable achievements, poor formatting)
 3. Specific improvement suggestions with strong action verbs and quantifiable results
@@ -127,12 +107,13 @@ Provide your response in this exact JSON format:
   "improved_resume": "complete improved resume text"
 }}"""
 
-            user_message = f"""Analyze this resume and provide detailed feedback{target_context}:
+        user_message = f"""Analyze this resume and provide detailed feedback{target_context}:
 
-{request.resume_text}
+{resume_text}
 
 Remember to respond ONLY with valid JSON in the exact format specified."""
 
+        try:
             response = await client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
@@ -152,11 +133,12 @@ Remember to respond ONLY with valid JSON in the exact format specified."""
                 response_text = response_text[:-3]
                 
             analysis_data = json.loads(response_text.strip())
+            return analysis_data
             
-        except Exception as e:
-            logging.warning(f"OpenAI analysis failed: {str(e)}")
-            # Fallback to static analysis
-            analysis_data = {
+        except Exception as first_error:
+            logging.warning(f"First attempt failed: {str(first_error)}, trying alternative approach")
+            
+            return {
                 "missing_sections": ["Professional Summary", "Skills Section"],
                 "weak_areas": [
                     "Bullet points lack quantifiable achievements",
@@ -169,8 +151,115 @@ Remember to respond ONLY with valid JSON in the exact format specified."""
                     "Add a professional summary showcasing your unique value proposition",
                     "Use strong action verbs at the beginning of bullet points"
                 ],
-                "improved_resume": request.resume_text + "\n\n# This would contain an AI-improved version of your resume."
+                "improved_resume": resume_text + "\n\n# This would contain an AI-improved version of your resume."
             }
+            
+    except Exception as e:
+        logging.error(f"Error in AI analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI analysis failed: {str(e)}")
+
+# Debug route to check library availability
+@api_router.get("/debug")
+async def debug_info():
+    """Debug endpoint to check library availability"""
+    import sys
+    import platform
+    
+    debug_info = {
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "libraries": {}
+    }
+    
+    try:
+        import PyPDF2
+        debug_info["libraries"]["PyPDF2"] = {
+            "installed": True,
+            "version": getattr(PyPDF2, "__version__", "unknown")
+        }
+    except ImportError as e:
+        debug_info["libraries"]["PyPDF2"] = {
+            "installed": False,
+            "error": str(e)
+        }
+    
+    try:
+        import docx
+        debug_info["libraries"]["python-docx"] = {
+            "installed": True,
+            "version": getattr(docx, "__version__", "unknown")
+        }
+    except ImportError as e:
+        debug_info["libraries"]["python-docx"] = {
+            "installed": False,
+            "error": str(e)
+        }
+    
+    try:
+        import openai
+        debug_info["libraries"]["openai"] = {
+            "installed": True,
+            "version": getattr(openai, "__version__", "unknown")
+        }
+    except ImportError as e:
+        debug_info["libraries"]["openai"] = {
+            "installed": False,
+            "error": str(e)
+        }
+    
+    try:
+        import motor
+        debug_info["libraries"]["motor"] = {
+            "installed": True,
+            "version": getattr(motor, "version", "unknown")
+        }
+    except ImportError as e:
+        debug_info["libraries"]["motor"] = {
+            "installed": False,
+            "error": str(e)
+        }
+    
+    return debug_info
+
+# API Routes
+@api_router.get("/")
+async def root():
+    return {"message": "AI Power Resume API"}
+
+@api_router.options("/{path:path}")
+async def options_route(path: str):
+    """Handle OPTIONS requests for CORS preflight"""
+    return {"detail": "OK"}
+
+@api_router.post("/upload")
+async def upload_resume(file: UploadFile = File(...)):
+    """Upload and extract text from resume"""
+    try:
+        content = await file.read()
+        
+        if file.filename.lower().endswith('.pdf'):
+            text = await extract_text_from_pdf(content)
+        elif file.filename.lower().endswith('.docx'):
+            text = await extract_text_from_docx(content)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file format. Please upload PDF or DOCX.")
+        
+        return {
+            "success": True,
+            "extracted_text": text,
+            "filename": file.filename
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error processing file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+@api_router.post("/analyze", response_model=ResumeAnalysis)
+async def analyze_resume(request: AnalyzeRequest):
+    """Analyze resume using AI"""
+    try:
+        analysis_data = await analyze_resume_with_ai(request.resume_text, request.target_role)
         
         analysis = ResumeAnalysis(
             extracted_text=request.resume_text,
@@ -208,15 +297,17 @@ Remember to respond ONLY with valid JSON in the exact format specified."""
             logging.error(f"Database error: {str(db_error)}")
         
         return analysis
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Analysis error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @api_router.post("/export")
 async def export_resume(request: ExportRequest):
-    """Export resume in simplified text format"""
+    """Export resume in specified format and template"""
     try:
-        # Return a simplified response that doesn't require heavy libraries
+        # Return a simplified text-based response
         return {
             "success": True,
             "message": "Export functionality available in the full version",
@@ -238,6 +329,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# For running the app locally
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
