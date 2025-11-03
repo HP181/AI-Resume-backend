@@ -1,10 +1,8 @@
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException
-from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
-from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import uuid
@@ -12,24 +10,44 @@ from datetime import datetime, timezone
 import PyPDF2
 import docx
 import io
-from openai import AsyncOpenAI  # Replace emergentintegrations with OpenAI
+from openai import AsyncOpenAI
 import json
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from fastapi.responses import StreamingResponse
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not available, use environment variables directly
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+_mongo_client = None
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+def get_mongo_client():
+    """Get or create MongoDB client (singleton for serverless)"""
+    global _mongo_client
+    if _mongo_client is None:
+        mongo_url = os.environ.get('MONGO_URL')
+        if not mongo_url:
+            raise ValueError("MONGO_URL environment variable is required")
+        _mongo_client = AsyncIOMotorClient(
+            mongo_url,
+            maxPoolSize=10,
+            minPoolSize=1,
+            serverSelectionTimeoutMS=5000
+        )
+    return _mongo_client
+
+def get_db():
+    """Get database instance"""
+    client = get_mongo_client()
+    db_name = os.environ.get('DB_NAME', 'resume_db')
+    return client[db_name]
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -60,7 +78,6 @@ class ExportRequest(BaseModel):
     format: str  # "pdf" or "docx"
 
 
-# Utility functions
 async def extract_text_from_pdf(file_content: bytes) -> str:
     """Extract text from PDF file"""
     try:
@@ -86,7 +103,6 @@ async def extract_text_from_docx(file_content: bytes) -> str:
 async def analyze_resume_with_ai(resume_text: str, target_role: Optional[str] = None) -> dict:
     """Analyze resume using OpenAI API"""
     try:
-        # Get API key from environment variables - use OPENAI_API_KEY instead of EMERGENT_LLM_KEY
         api_key = os.environ.get('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
@@ -115,7 +131,6 @@ Provide your response in this exact JSON format:
 
 Remember to respond ONLY with valid JSON in the exact format specified."""
 
-        # First try with gpt-3.5-turbo without response_format parameter
         try:
             response = await client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -126,26 +141,21 @@ Remember to respond ONLY with valid JSON in the exact format specified."""
                 temperature=0.7
             )
             
-            # Get response text
             response_text = response.choices[0].message.content.strip()
             
-            # Clean up response if needed to ensure valid JSON
-            if response_text.startswith("```json"):
+            if response_text.startswith("\`\`\`json"):
                 response_text = response_text[7:]
-            if response_text.startswith("```"):
+            if response_text.startswith("\`\`\`"):
                 response_text = response_text[3:]
-            if response_text.endswith("```"):
+            if response_text.endswith("\`\`\`"):
                 response_text = response_text[:-3]
                 
-            # Parse JSON response
             analysis_data = json.loads(response_text.strip())
             return analysis_data
             
         except Exception as first_error:
-            # Log first attempt error
             logging.warning(f"First attempt failed: {str(first_error)}, trying alternative approach")
             
-            # Fallback: Try with a mock implementation
             return {
                 "missing_sections": ["Professional Summary", "Skills Section"],
                 "weak_areas": [
@@ -171,11 +181,9 @@ def generate_pdf(resume_text: str, template_style: str) -> bytes:
     buffer = io.BytesIO()
     
     if template_style == "professional":
-        # Dhruv Patel style - clean, minimalist
         doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
         styles = getSampleStyleSheet()
         
-        # Custom styles
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
@@ -291,7 +299,6 @@ def generate_pdf(resume_text: str, template_style: str) -> bytes:
         
         body_style = styles['Normal']
     
-    # Build content
     story = []
     lines = resume_text.split('\n')
     
@@ -301,10 +308,9 @@ def generate_pdf(resume_text: str, template_style: str) -> bytes:
             story.append(Spacer(1, 0.1*inch))
             continue
             
-        # Detect headings (simple heuristic)
         if line.isupper() or (len(line) < 50 and line.endswith(':')):
             story.append(Paragraph(line, heading_style))
-        elif len(story) == 0:  # First line is likely the name
+        elif len(story) == 0:
             story.append(Paragraph(line, title_style))
         else:
             story.append(Paragraph(line, body_style))
@@ -324,7 +330,7 @@ def generate_docx(resume_text: str, template_style: str) -> bytes:
         if not line:
             continue
             
-        if i == 0:  # Title/Name
+        if i == 0:
             heading = doc.add_heading(line, level=0)
             heading.alignment = docx.enum.text.WD_ALIGN_PARAGRAPH.CENTER
         elif line.isupper() or (len(line) < 50 and line.endswith(':')):
@@ -370,9 +376,10 @@ async def upload_resume(file: UploadFile = File(...)):
 async def analyze_resume(request: AnalyzeRequest):
     """Analyze resume using AI"""
     try:
+        db = get_db()
+        
         analysis_data = await analyze_resume_with_ai(request.resume_text, request.target_role)
         
-        # Create analysis object
         analysis = ResumeAnalysis(
             extracted_text=request.resume_text,
             missing_sections=analysis_data.get('missing_sections', []),
@@ -381,7 +388,6 @@ async def analyze_resume(request: AnalyzeRequest):
             improved_resume=analysis_data.get('improved_resume', '')
         )
         
-        # Save to database
         doc = analysis.model_dump()
         doc['timestamp'] = doc['timestamp'].isoformat()
         await db.resume_analyses.insert_one(doc)
@@ -437,7 +443,3 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
