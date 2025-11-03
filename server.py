@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware  # Import the CORS middleware
+from fastapi.middleware.cors import CORSMiddleware
 import os
 import logging
 from pydantic import BaseModel, Field, ConfigDict
@@ -8,7 +8,6 @@ import uuid
 from datetime import datetime, timezone
 import io
 import json
-from fastapi.responses import StreamingResponse
 
 # Create the main app
 app = FastAPI()
@@ -83,17 +82,19 @@ async def extract_text_from_docx(file_content: bytes) -> str:
 async def analyze_resume_with_ai(resume_text: str, target_role: Optional[str] = None) -> dict:
     """Analyze resume using OpenAI API"""
     try:
-        from openai import AsyncOpenAI
-        
         api_key = os.environ.get('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
-        client = AsyncOpenAI(api_key=api_key)
-        
-        target_context = f" for a {target_role} position" if target_role else ""
-        
-        system_message = f"""You are an expert resume analyzer and career coach. Analyze resumes{target_context} and provide:
+        # Try using OpenAI API with compatible client initialization
+        try:
+            from openai import AsyncOpenAI
+            # Create client without 'proxies' argument
+            client = AsyncOpenAI(api_key=api_key)
+            
+            target_context = f" for a {target_role} position" if target_role else ""
+            
+            system_message = f"""You are an expert resume analyzer and career coach. Analyze resumes{target_context} and provide:
 1. Missing sections (e.g., Profile/Summary, Skills, Experience, Education, Certifications, References)
 2. Weak areas (vague descriptions, lack of measurable achievements, poor formatting)
 3. Specific improvement suggestions with strong action verbs and quantifiable results
@@ -107,13 +108,12 @@ Provide your response in this exact JSON format:
   "improved_resume": "complete improved resume text"
 }}"""
 
-        user_message = f"""Analyze this resume and provide detailed feedback{target_context}:
+            user_message = f"""Analyze this resume and provide detailed feedback{target_context}:
 
 {resume_text}
 
 Remember to respond ONLY with valid JSON in the exact format specified."""
 
-        try:
             response = await client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
@@ -136,8 +136,9 @@ Remember to respond ONLY with valid JSON in the exact format specified."""
             return analysis_data
             
         except Exception as first_error:
-            logging.warning(f"First attempt failed: {str(first_error)}, trying alternative approach")
+            logging.warning(f"OpenAI API error: {str(first_error)}")
             
+            # Fallback to static analysis
             return {
                 "missing_sections": ["Professional Summary", "Skills Section"],
                 "weak_areas": [
@@ -168,9 +169,18 @@ async def debug_info():
     debug_info = {
         "python_version": sys.version,
         "platform": platform.platform(),
-        "libraries": {}
+        "libraries": {},
+        "environment": {}
     }
     
+    # Check for environment variables (redact sensitive values)
+    for key in os.environ:
+        if key in ['OPENAI_API_KEY', 'MONGO_URL']:
+            debug_info["environment"][key] = "Set" if os.environ.get(key) else "Not set"
+        else:
+            debug_info["environment"][key] = os.environ.get(key)
+    
+    # Check for library availability
     try:
         import PyPDF2
         debug_info["libraries"]["PyPDF2"] = {
@@ -203,18 +213,6 @@ async def debug_info():
         }
     except ImportError as e:
         debug_info["libraries"]["openai"] = {
-            "installed": False,
-            "error": str(e)
-        }
-    
-    try:
-        import motor
-        debug_info["libraries"]["motor"] = {
-            "installed": True,
-            "version": getattr(motor, "version", "unknown")
-        }
-    except ImportError as e:
-        debug_info["libraries"]["motor"] = {
             "installed": False,
             "error": str(e)
         }
@@ -305,9 +303,9 @@ async def analyze_resume(request: AnalyzeRequest):
 
 @api_router.post("/export")
 async def export_resume(request: ExportRequest):
-    """Export resume in specified format and template"""
+    """Export resume in simplified text format"""
     try:
-        # Return a simplified text-based response
+        # Return a simplified response that doesn't require heavy libraries
         return {
             "success": True,
             "message": "Export functionality available in the full version",
