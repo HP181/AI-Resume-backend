@@ -3,7 +3,11 @@
   "builds": [
     {
       "src": "server.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "15mb",
+        "runtime": "python3.9"
+      }
     }
   ],
   "routes": [
@@ -11,15 +15,5 @@
       "src": "/(.*)",
       "dest": "server.py"
     }
-  ],
-  "functions": {
-    "server.py": {
-      "memory": 1024,
-      "maxDuration": 10,
-      "excludeFiles": "{.next,*.cache,node_modules,public,app,__pycache__,venv,.venv,tests}/**"
-    },
-    "api/**": {
-      "excludeFiles": "{.next,*.cache,node_modules,public,app,__pycache__,venv,.venv,tests}/**"
-    }
-  }
+  ]
 }
