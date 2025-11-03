@@ -1,6 +1,5 @@
 fastapi==0.110.1
 pydantic==2.6.3
-starlette==0.36.3
 uvicorn==0.26.0
 python-multipart==0.0.7
 PyPDF2==3.0.1
