@@ -143,12 +143,13 @@ Remember to respond ONLY with valid JSON in the exact format specified."""
             
             response_text = response.choices[0].message.content.strip()
             
-            if response_text.startswith("\`\`\`json"):
+            if response_text.startswith(r"```json"):
                 response_text = response_text[7:]
-            if response_text.startswith("\`\`\`"):
+            if response_text.startswith(r"```"):
                 response_text = response_text[3:]
-            if response_text.endswith("\`\`\`"):
+            if response_text.endswith(r"```"):
                 response_text = response_text[:-3]
+
                 
             analysis_data = json.loads(response_text.strip())
             return analysis_data
