@@ -9,11 +9,8 @@
       }
     }
   ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "server.py"
-    }
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/server.py" }
   ],
   "headers": [
     {
