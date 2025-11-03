@@ -1,5 +1,6 @@
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException
-from starlette.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware  # Import the CORS middleware
+from starlette.middleware.cors import CORSMiddleware  # Alternative import
 import os
 import logging
 from pydantic import BaseModel, Field, ConfigDict
@@ -11,6 +12,16 @@ import json
 
 # Create the main app
 app = FastAPI()
+
+# Add CORS middleware with more explicit configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://ai-resume-frontend-nu.vercel.app", "*"],  # Add your frontend URL explicitly and allow all origins as fallback
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+    expose_headers=["*"],  # Expose all headers
+)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -40,6 +51,11 @@ class ExportRequest(BaseModel):
 @api_router.get("/")
 async def root():
     return {"message": "AI Power Resume API"}
+
+@api_router.options("/{path:path}")
+async def options_route(path: str):
+    """Handle OPTIONS requests for CORS preflight"""
+    return {"detail": "OK"}
 
 @api_router.post("/upload")
 async def upload_resume(file: UploadFile = File(...)):
@@ -78,6 +94,7 @@ async def upload_resume(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        logging.error(f"File processing error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 @api_router.post("/analyze", response_model=ResumeAnalysis)
@@ -214,17 +231,14 @@ async def export_resume(request: ExportRequest):
 # Include the router in the main app
 app.include_router(api_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# This is important for Vercel serverless functions
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
