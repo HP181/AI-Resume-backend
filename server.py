@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 import io
 import json
+from fastapi.responses import StreamingResponse
 
 # Create the main app
 app = FastAPI()
@@ -303,16 +304,223 @@ async def analyze_resume(request: AnalyzeRequest):
 
 @api_router.post("/export")
 async def export_resume(request: ExportRequest):
-    """Export resume in simplified text format"""
+    """Export resume in specified format and template"""
     try:
-        # Return a simplified response that doesn't require heavy libraries
-        return {
-            "success": True,
-            "message": "Export functionality available in the full version",
-            "resume_text": request.resume_text,
-            "template_style": request.template_style,
-            "format": request.format
-        }
+        if request.format == "pdf":
+            try:
+                from reportlab.lib.pagesizes import letter
+                from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                from reportlab.lib.units import inch
+                from reportlab.lib import colors
+                from reportlab.lib.enums import TA_LEFT, TA_CENTER
+                
+                buffer = io.BytesIO()
+                
+                if request.template_style == "professional":
+                    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
+                    styles = getSampleStyleSheet()
+                    
+                    title_style = ParagraphStyle(
+                        'CustomTitle',
+                        parent=styles['Heading1'],
+                        fontSize=20,
+                        textColor=colors.HexColor('#1a1a1a'),
+                        spaceAfter=12,
+                        alignment=TA_CENTER,
+                        fontName='Helvetica-Bold'
+                    )
+                    
+                    heading_style = ParagraphStyle(
+                        'CustomHeading',
+                        parent=styles['Heading2'],
+                        fontSize=14,
+                        textColor=colors.HexColor('#2c2c2c'),
+                        spaceAfter=6,
+                        spaceBefore=12,
+                        fontName='Helvetica-Bold',
+                        borderWidth=1,
+                        borderColor=colors.HexColor('#e0e0e0'),
+                        borderPadding=5
+                    )
+                    
+                    body_style = ParagraphStyle(
+                        'CustomBody',
+                        parent=styles['Normal'],
+                        fontSize=10,
+                        textColor=colors.HexColor('#333333'),
+                        spaceAfter=8,
+                        fontName='Helvetica'
+                    )
+                    
+                elif request.template_style == "modern":
+                    doc = SimpleDocTemplate(buffer, pagesize=letter)
+                    styles = getSampleStyleSheet()
+                    
+                    title_style = ParagraphStyle(
+                        'ModernTitle',
+                        parent=styles['Heading1'],
+                        fontSize=22,
+                        textColor=colors.HexColor('#0066cc'),
+                        spaceAfter=15,
+                        alignment=TA_LEFT,
+                        fontName='Helvetica-Bold'
+                    )
+                    
+                    heading_style = ParagraphStyle(
+                        'ModernHeading',
+                        parent=styles['Heading2'],
+                        fontSize=13,
+                        textColor=colors.HexColor('#0066cc'),
+                        spaceAfter=8,
+                        spaceBefore=15,
+                        fontName='Helvetica-Bold'
+                    )
+                    
+                    body_style = styles['Normal']
+                    
+                elif request.template_style == "classic":
+                    doc = SimpleDocTemplate(buffer, pagesize=letter)
+                    styles = getSampleStyleSheet()
+                    
+                    title_style = ParagraphStyle(
+                        'ClassicTitle',
+                        parent=styles['Heading1'],
+                        fontSize=18,
+                        textColor=colors.black,
+                        spaceAfter=10,
+                        alignment=TA_CENTER,
+                        fontName='Times-Bold'
+                    )
+                    
+                    heading_style = ParagraphStyle(
+                        'ClassicHeading',
+                        parent=styles['Heading2'],
+                        fontSize=12,
+                        textColor=colors.black,
+                        spaceAfter=6,
+                        spaceBefore=10,
+                        fontName='Times-Bold'
+                    )
+                    
+                    body_style = ParagraphStyle(
+                        'ClassicBody',
+                        parent=styles['Normal'],
+                        fontSize=11,
+                        fontName='Times-Roman'
+                    )
+                    
+                else:  # creative
+                    doc = SimpleDocTemplate(buffer, pagesize=letter)
+                    styles = getSampleStyleSheet()
+                    
+                    title_style = ParagraphStyle(
+                        'CreativeTitle',
+                        parent=styles['Heading1'],
+                        fontSize=24,
+                        textColor=colors.HexColor('#ff6b35'),
+                        spaceAfter=15,
+                        alignment=TA_LEFT,
+                        fontName='Helvetica-Bold'
+                    )
+                    
+                    heading_style = ParagraphStyle(
+                        'CreativeHeading',
+                        parent=styles['Heading2'],
+                        fontSize=14,
+                        textColor=colors.HexColor('#ff6b35'),
+                        spaceAfter=8,
+                        spaceBefore=12,
+                        fontName='Helvetica-Bold'
+                    )
+                    
+                    body_style = styles['Normal']
+                
+                story = []
+                lines = request.resume_text.split('\n')
+                
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        story.append(Spacer(1, 0.1*inch))
+                        continue
+                        
+                    if line.isupper() or (len(line) < 50 and line.endswith(':')):
+                        story.append(Paragraph(line, heading_style))
+                    elif len(story) == 0:
+                        story.append(Paragraph(line, title_style))
+                    else:
+                        story.append(Paragraph(line, body_style))
+                
+                doc.build(story)
+                buffer.seek(0)
+                
+                # Return streaming response with the generated PDF
+                media_type = "application/pdf"
+                filename = f"resume_{request.template_style}.pdf"
+                
+                return StreamingResponse(
+                    buffer,
+                    media_type=media_type,
+                    headers={"Content-Disposition": f"attachment; filename={filename}"}
+                )
+                
+            except ImportError as e:
+                logging.warning(f"PDF generation library not available: {str(e)}")
+                return {
+                    "success": False, 
+                    "error": "PDF generation is not available in this deployment. Please try a different format or contact support.",
+                    "detail": str(e)
+                }
+                
+        elif request.format == "docx":
+            try:
+                import docx
+                
+                doc = docx.Document()
+                
+                lines = request.resume_text.split('\n')
+                
+                for i, line in enumerate(lines):
+                    line = line.strip()
+                    if not line:
+                        continue
+                        
+                    if i == 0:
+                        heading = doc.add_heading(line, level=0)
+                        heading.alignment = docx.enum.text.WD_ALIGN_PARAGRAPH.CENTER
+                    elif line.isupper() or (len(line) < 50 and line.endswith(':')):
+                        doc.add_heading(line, level=1)
+                    else:
+                        doc.add_paragraph(line)
+                
+                buffer = io.BytesIO()
+                doc.save(buffer)
+                buffer.seek(0)
+                
+                # Return streaming response with the generated DOCX
+                media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                filename = f"resume_{request.template_style}.docx"
+                
+                return StreamingResponse(
+                    buffer,
+                    media_type=media_type,
+                    headers={"Content-Disposition": f"attachment; filename={filename}"}
+                )
+                
+            except ImportError as e:
+                logging.warning(f"DOCX generation library not available: {str(e)}")
+                return {
+                    "success": False, 
+                    "error": "DOCX generation is not available in this deployment. Please try a different format or contact support.",
+                    "detail": str(e)
+                }
+                
+        else:
+            raise HTTPException(status_code=400, detail="Invalid format. Use 'pdf' or 'docx'.")
+            
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Export error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
