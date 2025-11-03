@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "builds": [
     {
       "src": "server.py",
@@ -10,5 +11,15 @@
       "src": "/(.*)",
       "dest": "server.py"
     }
-  ]
+  ],
+  "functions": {
+    "server.py": {
+      "memory": 1024,
+      "maxDuration": 10,
+      "excludeFiles": "{.next,*.cache,node_modules,public,app,__pycache__,venv,.venv,tests}/**"
+    },
+    "api/**": {
+      "excludeFiles": "{.next,*.cache,node_modules,public,app,__pycache__,venv,.venv,tests}/**"
+    }
+  }
 }
